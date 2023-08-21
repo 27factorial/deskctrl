@@ -19,6 +19,19 @@ The generated executable can be found in `target/release/ewwctrl`.
 Ewwctrl is only tested on the latest nightly Rust toolchain, although it will probably compile on 
 the latest stable or earlier toolchain versions, as it doesn't use any nightly features (yet).
 
+# Paths
+Ewwctrl uses a number of files on disk as either data, unix domain sockets, or for stdout/stderr.
+
+- `/dev/shm/ewwctrld.sock`` -> The socket file for communication between the daemon and client 
+  processes. If your system does not have /dev/shm enabled, you can change the SOCKET_PATH constant
+  to some other file path before compilation.
+- `/tmp/ewwctrld.{out | err}` -> The stdout and stderr files for the ewwctrl daemon process.
+- `/tmp/ewwctrld.pid` -> The PID file for the ewwctrl daemon process.
+- `/tmp/ewwctrl/data/notifications.json` -> The file containing notification data for eww to read 
+    from (usually using `tail -F`).
+- `/tmp/ewwctrl/images/\<hash>.png` -> Images pulled from DBus notifications. Cleaned up
+   automatically when running `ewwctrl kill` or when the image is no longer in use.
+
 ## Why?
 As you may notice when skimming the codebase, much of the data provided by ewwctrl is already built
 into eww itself, so then what's the point of this program?

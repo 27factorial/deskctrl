@@ -135,7 +135,7 @@ impl Watcher for NetworkWatcher {
                 samples.push(sample);
             }
 
-            // Every `sample_count` loops, we'll send a message containing the network usage stats.
+            // Every `sample_count` loops, I'll send a message containing the network usage stats.
             if loop_idx == self.sample_count - 1 {
                 guard.refresh_networks_list();
                 for (name, samples) in self.sample_map.iter() {

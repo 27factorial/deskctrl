@@ -66,7 +66,9 @@ impl NotificationData {
             .iter()
             .position(|replace| replace.id == notification.id)
         {
-            self.notifications.remove(idx);
+            if let Some(old) = self.notifications.remove(idx) {
+                self.clean_image(old).await?;
+            }
         }
 
         self.notifications.push_front(notification);
@@ -100,6 +102,15 @@ impl NotificationData {
         Ok(())
     }
 
+    pub async fn cleanup(mut self) -> anyhow::Result<()> {
+        // Unfortunately I can't use a for-loop here because of lifetime issues.
+        while let Some(notification) = self.notifications.pop_back() {
+            self.clean_image(notification).await?;
+        }
+
+        Ok(())
+    }
+
     async fn write_notifications(&mut self) -> anyhow::Result<()> {
         self.json_file
             .set_len(0)
@@ -116,7 +127,7 @@ impl NotificationData {
         Ok(())
     }
 
-    async fn clean_image(&mut self, notification: EwwNotification) -> anyhow::Result<()> {
+    async fn clean_image(&self, notification: EwwNotification) -> anyhow::Result<()> {
         if notification.tmp_image {
             let Some(image_path) = notification.image_path else {
                 return Ok(());
@@ -248,6 +259,11 @@ pub async fn run_daemon() -> anyhow::Result<()> {
             }
         }
     }
+
+    notification_data
+        .cleanup()
+        .await
+        .context("Failed to clean up notification image data")?;
 
     Ok(())
 }
