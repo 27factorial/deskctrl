@@ -1,8 +1,9 @@
 # EwwCtrl
 
-A (fairly) small program for providing data to and controlling my [eww (ElKowar's wacky widgets)](eww)
-widgets on my machine. Because this is only meant for personal use, documentation is lacking and 
-functionality only extends as far as I need (read: want) it to for my PC.
+A (fairly) small program for providing data to and controlling my 
+[eww (ElKowar's wacky widgets)](https://github.com/elkowar/eww) widgets on my machine. Because this 
+is only meant for personal use, documentation is lacking and functionality only extends as far as I
+need (read: want) it to for my PC.
 
 ## Compilation
 
@@ -38,5 +39,3 @@ The short answer is "Because I wanted to." The longer answer is:
 
 ## Usage
 Run ewwctrl --help for information on how to use the tool.
-
-[eww]: https://github.com/elkowar/eww
