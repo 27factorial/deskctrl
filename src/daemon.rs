@@ -80,6 +80,7 @@ impl NotificationData {
         self.json_bytes.clear();
         serde_json::to_writer(&mut self.json_bytes, &self.notifications)
             .context("Failed to serialize to json_bytes buffer")?;
+        self.json_bytes.push(b'\n');
 
         self.write_notifications().await?;
 
