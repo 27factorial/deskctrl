@@ -22,7 +22,7 @@ the latest stable or earlier toolchain versions, as it doesn't use any nightly f
 # Paths
 Ewwctrl uses a number of files on disk as either data, unix domain sockets, or for stdout/stderr.
 
-- `/dev/shm/ewwctrld.sock`` -> The socket file for communication between the daemon and client 
+- `/dev/shm/ewwctrld.sock` -> The socket file for communication between the daemon and client 
   processes. If your system does not have /dev/shm enabled, you can change the SOCKET_PATH constant
   to some other file path before compilation.
 - `/tmp/ewwctrld.{out | err}` -> The stdout and stderr files for the ewwctrl daemon process.
