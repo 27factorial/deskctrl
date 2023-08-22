@@ -77,11 +77,6 @@ impl NotificationData {
             self.notifications.pop_back();
         }
 
-        self.json_bytes.clear();
-        serde_json::to_writer(&mut self.json_bytes, &self.notifications)
-            .context("Failed to serialize to json_bytes buffer")?;
-        self.json_bytes.push(b'\n');
-
         self.write_notifications().await?;
 
         Ok(())
@@ -113,6 +108,11 @@ impl NotificationData {
     }
 
     async fn write_notifications(&mut self) -> anyhow::Result<()> {
+        self.json_bytes.clear();
+        serde_json::to_writer(&mut self.json_bytes, &self.notifications)
+            .context("Failed to serialize to json_bytes buffer")?;
+        self.json_bytes.push(b'\n');
+
         self.json_file
             .set_len(0)
             .await

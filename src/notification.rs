@@ -1,6 +1,7 @@
 use anyhow::Context;
 use gdk_pixbuf::{Colorspace, Pixbuf};
 use glib::Bytes;
+use hyphenation::{Language, Load, Standard as HyphenStandard};
 use ring::digest;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -8,6 +9,7 @@ use std::{
     path::{Path, PathBuf},
     time::SystemTime,
 };
+use textwrap::{Options as WrapOptions, WordSplitter};
 use tokio::{
     fs::{self, File},
     io::AsyncWriteExt,
@@ -16,6 +18,7 @@ use zvariant::{OwnedValue, Type, Value};
 
 pub const NOTIFICATIONS_FILE: &str = "notifications.json";
 pub const NOTIFICATION_LIMIT: usize = 32;
+pub const LINE_LENGTH: usize = 36;
 
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize, Type)]
 pub struct DBusNotification {
@@ -32,7 +35,7 @@ pub struct DBusNotification {
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Serialize, Deserialize)]
 pub struct EwwNotification {
     pub id: u32,
-    pub timestamp: u128,
+    pub timestamp: u64,
     pub app_name: String,
     pub summary: String,
     pub body: String,
@@ -85,7 +88,7 @@ pub async fn make_eww(mut dbus_notif: DBusNotification) -> anyhow::Result<EwwNot
     let timestamp = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .context("Failed to get duration since Unix epoch")?
-        .as_millis();
+        .as_secs();
 
     let image_info = {
         // (image_path, tmp_image)
@@ -169,12 +172,15 @@ pub async fn make_eww(mut dbus_notif: DBusNotification) -> anyhow::Result<EwwNot
         ret
     };
 
+    let summary = word_wrap(&dbus_notif.summary, LINE_LENGTH)?;
+    let body = word_wrap(&dbus_notif.body, LINE_LENGTH)?;
+
     Ok(EwwNotification {
         id: dbus_notif.replaces_id,
         timestamp,
         app_name,
-        summary: dbus_notif.summary,
-        body: dbus_notif.body,
+        summary,
+        body,
         app_icon,
         image_path,
         tmp_image,
@@ -218,6 +224,16 @@ pub async fn create_dir_and_file<P: AsRef<Path>>(path: P) -> anyhow::Result<File
     Ok(file)
 }
 
+fn word_wrap(content: &str, line_length: usize) -> anyhow::Result<String> {
+    let options = WrapOptions::new(line_length)
+        .break_words(true)
+        .word_splitter(WordSplitter::Hyphenation(HyphenStandard::from_embedded(
+            Language::EnglishUS,
+        )?));
+
+    Ok(textwrap::fill(content, options))
+}
+
 fn get_digest(bytes: &[u8]) -> String {
     // I'm using this lookup table so that there's no need to go through the format!(...) machinery
     // or pull in the `hex` dependency to format bytes as a hex string.
@@ -254,3 +270,5 @@ fn get_digest(bytes: &[u8]) -> String {
         .for_each(|&byte| hex_bytes.push_str(HEX_DIGITS[byte as usize]));
     hex_bytes
 }
+
+

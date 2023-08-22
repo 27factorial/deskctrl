@@ -13,11 +13,13 @@ clap = { version = "4.3.19", features = ["derive"] }
 daemonize = "0.5.0"
 gdk-pixbuf = "0.18.0"
 glib = "0.18.1"
+hyphenation = "0.8.4"
 nix = "0.26.2"
 ring = "0.16.20"
 serde = { version = "1.0", features = ["serde_derive"] }
 serde_json = "1.0.103"
 sysinfo = { path = "../sysinfo" }
+textwrap = { version = "0.16.0", features = ["hyphenation"] }
 tokio = { version = "1.29.1", features = ["full"] }
 zbus = { version = "3.14.1", default-features = false, features = ["tokio"] }
 zvariant = "3.15.0"
