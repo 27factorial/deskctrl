@@ -159,10 +159,20 @@ pub async fn make_eww(mut dbus_notif: DBusNotification) -> anyhow::Result<EwwNot
         (None, false)
     };
 
+    // Capitalizes the first character of the app name, so it looks better when
+    // displayed as a notification.
+    let app_name = {
+        let mut ret = dbus_notif.app_name;
+        if let Some(char) = ret.chars().next() {
+            ret = char.to_uppercase().chain(ret.chars().skip(1)).collect();
+        }
+        ret
+    };
+
     Ok(EwwNotification {
         id: dbus_notif.replaces_id,
         timestamp,
-        app_name: dbus_notif.app_name,
+        app_name,
         summary: dbus_notif.summary,
         body: dbus_notif.body,
         app_icon,
