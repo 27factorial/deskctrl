@@ -42,9 +42,9 @@ impl From<EwwResponse> for IpcResponse {
 }
 
 // This is needed to write the response to stdout in a format that eww expects. This means that I
-// need a tagged response for communication between ewwctrl processes, and an untagged one for getting
-// information into eww. This does mean that the process of serialization between processes can be
-// done with a more efficient format than JSON, though.
+// need a tagged response for communication between deskctrl processes, and an untagged one for 
+// getting information into eww. This does mean that the process of serialization between processes
+// can be done with a more efficient format than JSON, though.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum EwwResponse {
@@ -93,7 +93,7 @@ pub fn print_update(request: IpcRequest) -> anyhow::Result<()> {
 
     match response {
         IpcResponse::Killed => {
-            writeln!(stdout, "Killed ewwctrl daemon.").context(stdout_error)?;
+            writeln!(stdout, "Killed deskctrl daemon.").context(stdout_error)?;
         }
         IpcResponse::NotificationDeleted(id) => {
             writeln!(stdout, "Deleted Notification {id}").context(stdout_error)?;

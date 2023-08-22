@@ -102,7 +102,7 @@ pub async fn make_eww(mut dbus_notif: DBusNotification) -> anyhow::Result<EwwNot
             match kind {
                 ImageKind::Data => {
                     // Some processing is needed to convert the Pixbuf image into a PNG and save
-                    // it somewhere on disk. For now, I'll use the /tmp/ewwctrl/images directory.
+                    // it somewhere on disk. For now, I'll use the /tmp/deskctrl/images directory.
                     let (width, height, row_stride, has_alpha, _, _, image_data) =
                         TryInto::<(i32, i32, i32, bool, i32, i32, Vec<u8>)>::try_into(value)
                             .context("Failed to deserialize image data to tuple (iiibiiay)")?;

@@ -1,5 +1,5 @@
 [package]
-name = "ewwctrl"
+name = "deskctrl"
 version = "0.1.0"
 authors = ["Factorial <27factorial@gmail.com>"]
 edition = "2021"

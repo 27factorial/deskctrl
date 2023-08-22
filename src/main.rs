@@ -16,9 +16,9 @@ use ipc::IpcRequest;
 use nix::unistd::Uid;
 use std::fs::File;
 
-const SOCKET_PATH: &str = "/dev/shm/ewwctrld.sock";
-const IMAGE_PATH: &str = "/tmp/ewwctrl/images";
-const DATA_PATH: &str = "/tmp/ewwctrl/data";
+const SOCKET_PATH: &str = "/dev/shm/deskctrld.sock";
+const IMAGE_PATH: &str = "/tmp/deskctrl/images";
+const DATA_PATH: &str = "/tmp/deskctrl/data";
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Factorial's controller program for eww widgets", long_about = None)]
@@ -31,13 +31,13 @@ pub enum Mode {
     Memory,
     /// Get information about CPU usage
     Cpu,
-    /// Kill the ewwctrl daemon
+    /// Kill the deskctrl daemon
     Kill,
-    /// Remove the specified notification from the ewwctrl daemon
+    /// Remove the specified notification from the deskctrl daemon
     DelNotif { id: u32 },
-    /// Provides daemon functionality without actually spawning ewwctrl as a daemon
+    /// Provides daemon functionality without actually spawning deskctrl as a daemon
     TestDaemon,
-    /// Start the ewwctrl daemon
+    /// Start the deskctrl daemon
     Daemon,
 }
 
@@ -56,12 +56,12 @@ fn main() -> anyhow::Result<()> {
         Mode::TestDaemon => daemon_main(),
         Mode::Daemon => {
             let stdout =
-                File::create("/tmp/ewwctrld.out").context("Failed to create daemon stdout")?;
+                File::create("/tmp/deskctrld.out").context("Failed to create daemon stdout")?;
             let stderr =
-                File::create("/tmp/ewwctrld.err").context("failed to create daemon stderr")?;
+                File::create("/tmp/deskctrld.err").context("failed to create daemon stderr")?;
 
             Daemonize::new()
-                .pid_file("/tmp/ewwctrld.pid")
+                .pid_file("/tmp/deskctrld.pid")
                 .working_directory("/tmp")
                 .stdout(stdout)
                 .stderr(stderr)
