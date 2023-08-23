@@ -17,7 +17,7 @@ use sysinfo::{CpuExt as _, DiskExt as _, NetworkExt as _, System, SystemExt as _
 use tokio::{
     io::AsyncWriteExt as _,
     sync::{
-        mpsc::{Sender, Receiver},
+        mpsc::{Receiver, Sender},
         Mutex, RwLock,
     },
     time::MissedTickBehavior,
@@ -63,10 +63,7 @@ pub struct HyprlandContext {
 
 impl HyprlandContext {
     pub fn new(updates: Sender<Update>, errors: Sender<anyhow::Error>) -> Self {
-        Self {
-            updates,
-            errors,
-        }
+        Self { updates, errors }
     }
 
     pub async fn send_update(&self, update: Update) -> anyhow::Result<()> {

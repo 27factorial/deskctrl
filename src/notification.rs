@@ -270,5 +270,3 @@ fn get_digest(bytes: &[u8]) -> String {
         .for_each(|&byte| hex_bytes.push_str(HEX_DIGITS[byte as usize]));
     hex_bytes
 }
-
-
