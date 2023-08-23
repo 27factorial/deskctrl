@@ -3,8 +3,8 @@ use crate::{
     ipc::{IpcRequest, IpcResponse},
     notification::{self, EwwNotification},
     watcher::{
-        CpuWatcher, DaemonContext, DiskWatcher, MemoryWatcher, NetworkWatcher, NotificationWatcher,
-        SystemKey, Update, Watcher,
+        CpuWatcher, DaemonContext, DiskWatcher, HyprlandContext, HyprlandWatcher, MemoryWatcher,
+        NetworkWatcher, NotificationWatcher, SystemKey, Update, Watcher,
     },
 };
 use anyhow::{bail, Context as _};
@@ -159,28 +159,38 @@ pub async fn run_daemon() -> anyhow::Result<()> {
 
     let mut serde_buffer = Vec::new();
 
-    let (tx, mut rx) = mpsc::channel(CHANNEL_BUFFER);
+    let (update_tx, mut update_rx) = mpsc::channel(CHANNEL_BUFFER);
+    let (hyprland_error_tx, hyprland_error_rx) = mpsc::channel(1);
 
-    let ctx = Arc::new(DaemonContext::new(tx));
-    ctx.data()
+    let daemon_ctx = Arc::new(DaemonContext::new(update_tx.clone()));
+    let hyprland_ctx = Arc::new(HyprlandContext::new(update_tx, hyprland_error_tx));
+
+    daemon_ctx
+        .data()
         .write()
         .await
         .insert::<SystemKey>(Mutex::new(System::new_all()));
 
     // Network: 4 samples per second(ish), 1 update per second(ish)
-    tokio::spawn(NetworkWatcher::new(Duration::from_millis(250), 4).watch(Arc::clone(&ctx)));
+    tokio::spawn(NetworkWatcher::new(Duration::from_millis(250), 4).watch(Arc::clone(&daemon_ctx)));
 
     // Disk: 1 sample every 2 seconds(ish), 1 update per 2 seconds(ish)
-    tokio::spawn(DiskWatcher::new(Duration::from_secs(2)).watch(Arc::clone(&ctx)));
+    tokio::spawn(DiskWatcher::new(Duration::from_secs(2)).watch(Arc::clone(&daemon_ctx)));
 
     // Memory: 1 sample per second(ish), 1 update per second(ish)
-    tokio::spawn(MemoryWatcher::new(Duration::from_secs(1)).watch(Arc::clone(&ctx)));
+    tokio::spawn(MemoryWatcher::new(Duration::from_secs(1)).watch(Arc::clone(&daemon_ctx)));
 
     // CPU: 2 samples per second(ish), 2 updates per second(ish)
-    tokio::spawn(CpuWatcher::new(Duration::from_millis(500)).watch(Arc::clone(&ctx)));
+    tokio::spawn(CpuWatcher::new(Duration::from_millis(500)).watch(Arc::clone(&daemon_ctx)));
 
     // Notifications: No polling required, writes to JSON file directly when a notification is received.
-    tokio::spawn(NotificationWatcher::new().await?.watch(Arc::clone(&ctx)));
+    tokio::spawn(
+        NotificationWatcher::new()
+            .await?
+            .watch(Arc::clone(&daemon_ctx)),
+    );
+
+    tokio::spawn(HyprlandWatcher::new(hyprland_error_rx).watch(hyprland_ctx));
 
     if tokio::fs::try_exists(crate::SOCKET_PATH)
         .await
@@ -196,7 +206,7 @@ pub async fn run_daemon() -> anyhow::Result<()> {
 
     while !killed {
         tokio::select! {
-            update = rx.recv() => {
+            update = update_rx.recv() => {
                 let Some(update) = update else {
                     return Ok(());
                 };
@@ -212,6 +222,9 @@ pub async fn run_daemon() -> anyhow::Result<()> {
                     Update::Cpu(cpu) => system_data.cpu = cpu,
                     Update::Notification(notification) => {
                         notification_data.insert_or_replace(notification).await?;
+                    }
+                    Update::ActiveWindow(_) => {
+                        todo!()
                     }
                 }
             },

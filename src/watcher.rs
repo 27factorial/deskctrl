@@ -6,7 +6,8 @@ use crate::{
     ringbuf::RingBuf,
     type_map::{TypeMap, TypeMapKey},
 };
-use anyhow::Context as _;
+use anyhow::{bail, Context as _};
+use hyprland::event_listener::{AsyncEventListener, WindowEventData};
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     sync::Arc,
@@ -15,7 +16,10 @@ use std::{
 use sysinfo::{CpuExt as _, DiskExt as _, NetworkExt as _, System, SystemExt as _};
 use tokio::{
     io::AsyncWriteExt as _,
-    sync::{mpsc::Sender, Mutex, RwLock},
+    sync::{
+        mpsc::{Sender, Receiver},
+        Mutex, RwLock,
+    },
     time::MissedTickBehavior,
 };
 use zbus::{
@@ -52,12 +56,37 @@ impl DaemonContext {
     }
 }
 
+pub struct HyprlandContext {
+    updates: Sender<Update>,
+    errors: Sender<anyhow::Error>,
+}
+
+impl HyprlandContext {
+    pub fn new(updates: Sender<Update>, errors: Sender<anyhow::Error>) -> Self {
+        Self {
+            updates,
+            errors,
+        }
+    }
+
+    pub async fn send_update(&self, update: Update) -> anyhow::Result<()> {
+        self.updates.send(update).await?;
+        Ok(())
+    }
+
+    pub async fn send_error(&self, error: anyhow::Error) -> anyhow::Result<()> {
+        self.errors.send(error).await?;
+        Ok(())
+    }
+}
+
 pub enum Update {
     Network(String, NetworkUsage),
     Disk(BTreeMap<String, DiskInfo>),
     Memory(MemoryUsage),
     Cpu(f64),
     Notification(EwwNotification),
+    ActiveWindow(WindowEventData),
 }
 
 pub struct SystemKey;
@@ -471,5 +500,50 @@ impl Watcher for NotificationWatcher {
         }
 
         Ok(())
+    }
+}
+
+pub struct HyprlandWatcher {
+    event_listener: AsyncEventListener,
+    errors: Receiver<anyhow::Error>,
+}
+
+impl HyprlandWatcher {
+    pub fn new(errors: Receiver<anyhow::Error>) -> Self {
+        Self {
+            event_listener: AsyncEventListener::new(),
+            errors,
+        }
+    }
+}
+
+impl Watcher for HyprlandWatcher {
+    type Context = Arc<HyprlandContext>;
+
+    async fn watch(mut self, ctx: Arc<HyprlandContext>) -> anyhow::Result<()> {
+        self.event_listener
+            .add_active_window_change_handler(move |data| {
+                // Unfortunately, using the event listener in this way incurs an Arc clone every
+                // time the handler is run. There isn't much I can do about that given the lifetime
+                // requirements on this closure.
+                let ctx = Arc::clone(&ctx);
+
+                Box::pin(async move {
+                    if let Some(event) = data {
+                        if let Err(e) = ctx.send_update(Update::ActiveWindow(event)).await {
+                            ctx.send_error(e).await.unwrap();
+                        }
+                    }
+                })
+            });
+
+        tokio::select! {
+            listener_result = self.event_listener.start_listener_async() => {
+                listener_result.context("Failed to run Hyprland event listener")
+            }
+            update_err = self.errors.recv() => {
+                bail!("Failed to send active window update: {update_err:?}")
+            }
+        }
     }
 }
