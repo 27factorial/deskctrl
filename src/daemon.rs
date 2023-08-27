@@ -1,16 +1,18 @@
 use crate::{
     data::{DiskInfo, MemoryUsage, NetworkUsage},
     ipc::{IpcRequest, IpcResponse},
-    notification::{self, EwwNotification},
+    notification::{self, EwwNotification, NOTIFICATION_LIMIT},
     watcher::{
         CpuWatcher, DaemonContext, DiskWatcher, HyprlandContext, HyprlandWatcher, MemoryWatcher,
         NetworkWatcher, NotificationWatcher, SystemKey, Update, Watcher,
     },
 };
 use anyhow::{bail, Context as _};
+use hyprland::{data::Client, shared::HyprDataActiveOptional};
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     io,
+    path::Path,
     sync::Arc,
     time::Duration,
 };
@@ -98,6 +100,26 @@ impl NotificationData {
         Ok(())
     }
 
+    // TODO: Switch this to extract_if when that's available on VecDeque (if ever)
+    pub async fn clear_class(&mut self, class: &str) -> anyhow::Result<()> {
+        let class = class.to_lowercase();
+
+        let mut i = 0;
+        while i < self.notifications.len() {
+            if self.notifications[i].app_class == class {
+                let old = self.notifications.remove(i).unwrap();
+
+                self.clean_image(old).await?;
+            } else {
+                i += 1;
+            }
+        }
+
+        self.write_notifications().await?;
+
+        Ok(())
+    }
+
     pub async fn cleanup(mut self) -> anyhow::Result<()> {
         // Unfortunately I can't use a for-loop here because of lifetime issues.
         while let Some(notification) = self.notifications.pop_back() {
@@ -128,6 +150,10 @@ impl NotificationData {
         Ok(())
     }
 
+    // TODO: Make this O(1) by caching the amount of notifications that share the same image,
+    // so that there's no need to iterate over self.notifications every time to check if any other
+    // notifications are using the same image. This will prevent a lot of other functions from being
+    // n^2 complexity.
     async fn clean_image(&self, notification: EwwNotification) -> anyhow::Result<()> {
         if notification.tmp_image {
             let Some(image_path) = notification.image_path else {
@@ -138,7 +164,7 @@ impl NotificationData {
                 .notifications
                 .iter()
                 .flat_map(|notif| notif.image_path.iter())
-                .any(|path| path.as_path() == image_path.as_path());
+                .any(|path| path.as_ref() == image_path.as_ref());
 
             if unique_image {
                 if let Err(e) = fs::remove_file(image_path).await {
@@ -221,10 +247,24 @@ pub async fn run_daemon() -> anyhow::Result<()> {
                     Update::Memory(memory) => system_data.memory = memory,
                     Update::Cpu(cpu) => system_data.cpu = cpu,
                     Update::Notification(notification) => {
+                        // We only want to add the notification to the queue if the window the
+                        // notification came from isn't focused already.
+                        let client = Client::get_active_async().await?;
+
+                        if let Some(active) = client {
+                            let active_class = active.class.to_lowercase();
+
+                            if notification.app_class == active_class {
+                                continue;
+                            }
+                        }
+
                         notification_data.insert_or_replace(notification).await?;
                     }
-                    Update::ActiveWindow(_) => {
-                        todo!()
+                    Update::ActiveWindow(event) => {
+                        // When switching to a new window, notifications are cleared for that window
+                        // class, since presumably you're going to check them.
+                        notification_data.clear_class(&event.window_class).await?;
                     }
                 }
             },

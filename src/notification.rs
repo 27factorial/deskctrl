@@ -3,10 +3,11 @@ use gdk_pixbuf::{Colorspace, Pixbuf};
 use glib::Bytes;
 use hyphenation::{Language, Load, Standard as HyphenStandard};
 use ring::digest;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
+    sync::Arc,
     time::SystemTime,
 };
 use textwrap::{Options as WrapOptions, WordSplitter};
@@ -20,7 +21,7 @@ pub const NOTIFICATIONS_FILE: &str = "notifications.json";
 pub const NOTIFICATION_LIMIT: usize = 32;
 pub const LINE_LENGTH: usize = 36;
 
-#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize, Type)]
+#[derive(Clone, PartialEq, Debug, Default, Deserialize, Type)]
 pub struct DBusNotification {
     app_name: String,
     replaces_id: u32,
@@ -32,15 +33,21 @@ pub struct DBusNotification {
     expire_timeout: i32,
 }
 
-#[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Serialize)]
 pub struct EwwNotification {
     pub id: u32,
     pub timestamp: u64,
     pub app_name: String,
+    // This is only used internally to keep track of which windows correspond to which notifications
+    #[serde(skip)]
+    pub app_class: String,
     pub summary: String,
     pub body: String,
     pub app_icon: Option<PathBuf>,
-    pub image_path: Option<PathBuf>,
+    // Putting this behind Arc instead of using PathBuf will make it much cheaper to copy
+    // when caching the image count.
+    #[serde(serialize_with = "serialize_opt_arc_path")]
+    pub image_path: Option<Arc<Path>>,
     pub tmp_image: bool,
 }
 
@@ -50,6 +57,10 @@ pub struct PixbufConfig {
     height: i32,
     row_stride: i32,
     has_alpha: bool,
+}
+
+fn serialize_opt_arc_path<S: Serializer>(opt: &Option<Arc<Path>>, serializer: S) -> Result<S::Ok, S::Error> {
+    opt.as_ref().map(|path| path.as_ref()).serialize(serializer)
 }
 
 pub async fn make_eww(mut dbus_notif: DBusNotification) -> anyhow::Result<EwwNotification> {
@@ -82,9 +93,6 @@ pub async fn make_eww(mut dbus_notif: DBusNotification) -> anyhow::Result<EwwNot
         ("image_path", ImageKind::Path),
     ];
 
-    // Technically this could cause files to be overwritten or something, but if that
-    // happens, there's probably more wrong than just the notification displaying
-    // the incorrect image
     let timestamp = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .context("Failed to get duration since Unix epoch")?
@@ -157,10 +165,14 @@ pub async fn make_eww(mut dbus_notif: DBusNotification) -> anyhow::Result<EwwNot
     };
 
     let (image_path, tmp_image) = if let Some((image_path, tmp_image)) = image_info {
-        (Some(image_path), tmp_image)
+        (Some(image_path.into()), tmp_image)
     } else {
         (None, false)
     };
+
+    // Note that this "app class" may not be *exactly* the same as the hyprland class, but
+    // most applications tend to be compatible with this method.
+    let app_class = dbus_notif.app_name.to_lowercase();
 
     // Capitalizes the first character of the app name, so it looks better when
     // displayed as a notification.
@@ -179,6 +191,7 @@ pub async fn make_eww(mut dbus_notif: DBusNotification) -> anyhow::Result<EwwNot
         id: dbus_notif.replaces_id,
         timestamp,
         app_name,
+        app_class,
         summary,
         body,
         app_icon,
@@ -235,8 +248,8 @@ fn word_wrap(content: &str, line_length: usize) -> anyhow::Result<String> {
 }
 
 fn get_digest(bytes: &[u8]) -> String {
-    // I'm using this lookup table so that there's no need to go through the format!(...) machinery
-    // or pull in the `hex` dependency to format bytes as a hex string.
+    // A lookup table isn't strictly necessary, but does prevent allocating a new String every time
+    // a byte is converted to hex to be displayed.
     const HEX_DIGITS: [&str; 256] = [
         "00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "0a", "0b", "0c", "0d", "0e",
         "0f", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "1a", "1b", "1c", "1d",
@@ -261,7 +274,6 @@ fn get_digest(bytes: &[u8]) -> String {
     let mut context = digest::Context::new(&digest::SHA256);
     context.update(bytes);
     let digest = context.finish();
-    // each byte in hex is 2 ASCII characters
     let mut hex_bytes = String::with_capacity(2 * digest.as_ref().len());
 
     digest
