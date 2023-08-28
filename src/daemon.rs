@@ -37,6 +37,7 @@ struct SystemData {
 #[derive(Debug)]
 struct NotificationData {
     notifications: VecDeque<EwwNotification>,
+    image_path_cache: HashMap<Arc<Path>, usize>,
     json_bytes: Vec<u8>,
     json_file: File,
 }
@@ -52,7 +53,8 @@ impl NotificationData {
         .context("Failed to create notifications JSON file")?;
 
         Ok(Self {
-            notifications: VecDeque::with_capacity(notification::NOTIFICATION_LIMIT),
+            notifications: VecDeque::with_capacity(NOTIFICATION_LIMIT),
+            image_path_cache: HashMap::with_capacity(NOTIFICATION_LIMIT),
             json_bytes: Vec::with_capacity(8192),
             json_file,
         })
@@ -73,9 +75,18 @@ impl NotificationData {
             }
         }
 
+        if notification.tmp_image {
+            if let Some(ref image_path) = notification.image_path {
+                self.image_path_cache
+                    .entry(Arc::clone(image_path))
+                    .and_modify(|count| *count += 1)
+                    .or_insert(1);
+            }
+        }
+
         self.notifications.push_front(notification);
 
-        if self.notifications.len() > notification::NOTIFICATION_LIMIT {
+        if self.notifications.len() > NOTIFICATION_LIMIT {
             self.notifications.pop_back();
         }
 
@@ -154,19 +165,21 @@ impl NotificationData {
     // so that there's no need to iterate over self.notifications every time to check if any other
     // notifications are using the same image. This will prevent a lot of other functions from being
     // n^2 complexity.
-    async fn clean_image(&self, notification: EwwNotification) -> anyhow::Result<()> {
+    async fn clean_image(&mut self, notification: EwwNotification) -> anyhow::Result<()> {
         if notification.tmp_image {
             let Some(image_path) = notification.image_path else {
                 return Ok(());
             };
 
-            let unique_image = self
-                .notifications
-                .iter()
-                .flat_map(|notif| notif.image_path.iter())
-                .any(|path| path.as_ref() == image_path.as_ref());
+            let Some(path_count) = self.image_path_cache.get_mut(&image_path) else {
+                return Ok(());
+            };
 
-            if unique_image {
+            *path_count -= 1;
+
+            if *path_count == 0 {
+                self.image_path_cache.remove(&image_path);
+
                 if let Err(e) = fs::remove_file(image_path).await {
                     if e.kind() != io::ErrorKind::NotFound {
                         bail!("Failed to clean up notification image file: {e:?}")
