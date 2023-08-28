@@ -59,7 +59,10 @@ pub struct PixbufConfig {
     has_alpha: bool,
 }
 
-fn serialize_opt_arc_path<S: Serializer>(opt: &Option<Arc<Path>>, serializer: S) -> Result<S::Ok, S::Error> {
+fn serialize_opt_arc_path<S: Serializer>(
+    opt: &Option<Arc<Path>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
     opt.as_ref().map(|path| path.as_ref()).serialize(serializer)
 }
 
