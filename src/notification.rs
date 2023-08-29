@@ -1,4 +1,4 @@
-use anyhow::{Context, bail};
+use anyhow::{bail, Context};
 use gdk_pixbuf::{Colorspace, Pixbuf};
 use glib::Bytes;
 use hyphenation::{Language, Load, Standard as HyphenStandard};
@@ -7,9 +7,10 @@ use serde::{Deserialize, Serialize, Serializer};
 use std::{
     cmp::Reverse,
     collections::{HashMap, VecDeque},
+    io,
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Duration, SystemTime}, io,
+    time::SystemTime,
 };
 use textwrap::{Options as WrapOptions, WordSplitter};
 use tokio::{
@@ -21,117 +22,6 @@ use zvariant::{OwnedValue, Type, Value};
 pub const NOTIFICATIONS_FILE: &str = "notifications.json";
 pub const NOTIFICATION_LIMIT: usize = 32;
 pub const LINE_LENGTH: usize = 36;
-
-/// When serialized to notifications.json, the format should look something like the
-/// following:
-/// [
-///     {
-///         "app_name": "app1"
-///         "notifications": [
-///             ...notification data
-///         ]
-///     },
-///     {
-///         "app_name": "app2"
-///         "notifications": [
-///             ...notification data
-///         ]
-///     },
-///     ...
-/// ]
-#[derive(Debug)]
-pub struct NotificationGroups {
-    map: HashMap<Arc<str>, NotificationQueue>,
-    image_path_cache: HashMap<Arc<Path>, usize>,
-    json_bytes: Vec<u8>,
-    json_file: File,
-}
-
-impl NotificationGroups {
-    pub async fn new() -> anyhow::Result<Self> {
-        let json_file = create_dir_and_file(format!("{}/{}", crate::DATA_PATH, NOTIFICATIONS_FILE))
-            .await
-            .context("Failed to create notifications JSON file")?;
-
-        Ok(Self {
-            map: Default::default(),
-            image_path_cache: Default::default(),
-            json_bytes: Vec::with_capacity(8192),
-            json_file,
-        })
-    }
-
-    pub async fn insert_or_replace(&mut self, notification: EwwNotification) -> anyhow::Result<()> {
-        let app_name = Arc::clone(&notification.app_name);
-
-        let data = self.map.entry(app_name).or_default();
-
-        if let Some(idx) = data
-            .notifications
-            .iter()
-            .position(|replace| replace.id == notification.id)
-        {
-            if let Some(old) = data.notifications.remove(idx) {
-                self.clean_image(old).await?;
-            }
-        }
-
-        todo!()
-    }
-
-    // TODO: Make this O(1) by caching the amount of notifications that share the same image,
-    // so that there's no need to iterate over self.notifications every time to check if any other
-    // notifications are using the same image. This will prevent a lot of other functions from being
-    // n^2 complexity.
-    async fn clean_image(&mut self, notification: EwwNotification) -> anyhow::Result<()> {
-        if notification.tmp_image {
-            let Some(image_path) = notification.image_path else {
-                return Ok(());
-            };
-
-            let Some(path_count) = self.image_path_cache.get_mut(&image_path) else {
-                return Ok(());
-            };
-
-            *path_count -= 1;
-
-            if *path_count == 0 {
-                self.image_path_cache.remove(&image_path);
-
-                if let Err(e) = fs::remove_file(image_path).await {
-                    if e.kind() != io::ErrorKind::NotFound {
-                        bail!("Failed to clean up notification image file: {e:?}")
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-}
-
-#[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Serialize)]
-struct NotificationQueue {
-    last_updated: u128,
-    notifications: VecDeque<EwwNotification>,
-}
-
-impl NotificationQueue {
-    fn new() -> Self {
-        Self {
-            last_updated: 0,
-            notifications: VecDeque::with_capacity(NOTIFICATION_LIMIT),
-        }
-    }
-}
-
-// Deriving default would not reserve capacity for self.notifcations, which should be done since
-// only a maximum of NOTIFICATION_LIMIT notifications will be stored at a time.
-impl Default for NotificationQueue {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 #[derive(Clone, PartialEq, Debug, Default, Deserialize, Type)]
 pub struct DBusNotification {
@@ -168,25 +58,28 @@ pub struct PixbufConfig {
     has_alpha: bool,
 }
 
-fn serialize_map_to_sorted_vec<S: Serializer>(
-    map: &HashMap<Arc<str>, NotificationQueue>,
+pub fn serialize_map_to_sorted_vec<S: Serializer>(
+    map: &HashMap<Arc<str>, (VecDeque<EwwNotification>, u128)>,
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
     #[derive(Serialize)]
     struct Group<'a> {
         app_name: &'a str,
-        notifications: &'a NotificationQueue,
+        notifications: &'a VecDeque<EwwNotification>,
+        #[serde(skip)]
+        timestamp: u128,
     }
 
     let mut vec = map
         .iter()
-        .map(|(app_name, notifications)| Group {
+        .map(|(app_name, (notifications, timestamp))| Group {
             app_name,
             notifications,
+            timestamp: *timestamp,
         })
         .collect::<Vec<_>>();
 
-    vec.sort_unstable_by_key(|elem| Reverse(elem.notifications.last_updated));
+    vec.sort_unstable_by_key(|elem| Reverse(elem.timestamp));
 
     vec.serialize(serializer)
 }
@@ -221,7 +114,10 @@ pub async fn make_eww(mut dbus_notif: DBusNotification) -> anyhow::Result<EwwNot
         ("image_path", ImageKind::Path),
     ];
 
-    let timestamp = get_time().as_secs();
+    let timestamp = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .expect("failed to get duration since Unix epoch")
+        .as_secs();
 
     let image_info = {
         // (image_path, tmp_image)
@@ -362,7 +258,10 @@ pub async fn create_dir_and_file<P: AsRef<Path>>(path: P) -> anyhow::Result<File
     Ok(file)
 }
 
-pub async fn clean_image(cache: &mut HashMap<Arc<Path>, usize>, notification: EwwNotification) -> anyhow::Result<()> {
+pub async fn clean_image(
+    cache: &mut HashMap<Arc<Path>, usize>,
+    notification: EwwNotification,
+) -> anyhow::Result<()> {
     if notification.tmp_image {
         let Some(image_path) = notification.image_path else {
             return Ok(());
@@ -432,11 +331,4 @@ fn get_digest(bytes: &[u8]) -> String {
         .iter()
         .for_each(|&byte| hex_bytes.push_str(HEX_DIGITS[byte as usize]));
     hex_bytes
-}
-
-// TODO: Use Instant instead of SystemTime to guarantee monotonicity.
-fn get_time() -> Duration {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .expect("failed to get duration since Unix epoch")
 }

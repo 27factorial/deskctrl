@@ -7,18 +7,17 @@ use crate::{
         NetworkWatcher, NotificationWatcher, SystemKey, Update, Watcher,
     },
 };
-use anyhow::{bail, Context as _};
+use anyhow::Context as _;
 use hyprland::{data::Client, shared::HyprDataActiveOptional};
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
-    io,
     path::Path,
     sync::Arc,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 use sysinfo::{System, SystemExt};
 use tokio::{
-    fs::{self, File},
+    fs::File,
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     net::UnixListener,
     sync::{mpsc, Mutex},
@@ -36,7 +35,7 @@ struct SystemData {
 
 #[derive(Debug)]
 struct NotificationData {
-    map: HashMap<Arc<str>, VecDeque<EwwNotification>>,
+    map: HashMap<Arc<str>, (VecDeque<EwwNotification>, u128)>,
     image_path_cache: HashMap<Arc<Path>, usize>,
     json_bytes: Vec<u8>,
     json_file: File,
@@ -65,7 +64,7 @@ impl NotificationData {
         // will replace the old notification with the new one if necessary. This also cuts down on
         // disk usage for things like spotify, where only one song needs to be in the notification
         // queue.
-        let notifications = self
+        let (notifications, timestamp) = self
             .map
             .entry(Arc::clone(&notification.app_name))
             .or_default();
@@ -94,13 +93,18 @@ impl NotificationData {
             notifications.pop_back();
         }
 
+        *timestamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("failed to get duration since Unix epoch")
+            .as_nanos();
+
         self.write_notifications().await?;
 
         Ok(())
     }
 
     pub async fn remove(&mut self, id: u32) -> anyhow::Result<()> {
-        for notifications in self.map.values_mut() {
+        for (notifications, _) in self.map.values_mut() {
             let position = notifications
                 .iter()
                 .position(|notification| notification.id == id);
@@ -121,7 +125,7 @@ impl NotificationData {
     pub async fn clear_class(&mut self, class: &str) -> anyhow::Result<()> {
         let class = class.to_lowercase();
 
-        for notifications in self.map.values_mut() {
+        for (notifications, _) in self.map.values_mut() {
             let mut i = 0;
             while i < notifications.len() {
                 if notifications[i].app_class == class {
@@ -140,7 +144,7 @@ impl NotificationData {
     }
 
     pub async fn cleanup(mut self) -> anyhow::Result<()> {
-        for mut notifications in self.map.into_values() {
+        for (mut notifications, _) in self.map.into_values() {
             // Unfortunately I can't use a for-loop here because of lifetime issues.
             while let Some(notification) = notifications.pop_back() {
                 notification::clean_image(&mut self.image_path_cache, notification).await?;
@@ -152,7 +156,10 @@ impl NotificationData {
 
     async fn write_notifications(&mut self) -> anyhow::Result<()> {
         self.json_bytes.clear();
-        serde_json::to_writer(&mut self.json_bytes, &self.map)
+
+        let mut serializer = serde_json::Serializer::new(&mut self.json_bytes);
+
+        notification::serialize_map_to_sorted_vec(&self.map, &mut serializer)
             .context("Failed to serialize to json_bytes buffer")?;
         self.json_bytes.push(b'\n');
 
