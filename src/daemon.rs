@@ -36,7 +36,7 @@ struct SystemData {
 
 #[derive(Debug)]
 struct NotificationData {
-    notifications: VecDeque<EwwNotification>,
+    map: HashMap<Arc<str>, VecDeque<EwwNotification>>,
     image_path_cache: HashMap<Arc<Path>, usize>,
     json_bytes: Vec<u8>,
     json_file: File,
@@ -53,7 +53,7 @@ impl NotificationData {
         .context("Failed to create notifications JSON file")?;
 
         Ok(Self {
-            notifications: VecDeque::with_capacity(NOTIFICATION_LIMIT),
+            map: HashMap::new(),
             image_path_cache: HashMap::with_capacity(NOTIFICATION_LIMIT),
             json_bytes: Vec::with_capacity(8192),
             json_file,
@@ -65,13 +65,17 @@ impl NotificationData {
         // will replace the old notification with the new one if necessary. This also cuts down on
         // disk usage for things like spotify, where only one song needs to be in the notification
         // queue.
-        if let Some(idx) = self
-            .notifications
+        let notifications = self
+            .map
+            .entry(Arc::clone(&notification.app_name))
+            .or_default();
+
+        if let Some(idx) = notifications
             .iter()
             .position(|replace| replace.id == notification.id)
         {
-            if let Some(old) = self.notifications.remove(idx) {
-                self.clean_image(old).await?;
+            if let Some(old) = notifications.remove(idx) {
+                notification::clean_image(&mut self.image_path_cache, old).await?;
             }
         }
 
@@ -84,10 +88,10 @@ impl NotificationData {
             }
         }
 
-        self.notifications.push_front(notification);
+        notifications.push_front(notification);
 
-        if self.notifications.len() > NOTIFICATION_LIMIT {
-            self.notifications.pop_back();
+        if notifications.len() > NOTIFICATION_LIMIT {
+            notifications.pop_back();
         }
 
         self.write_notifications().await?;
@@ -96,15 +100,17 @@ impl NotificationData {
     }
 
     pub async fn remove(&mut self, id: u32) -> anyhow::Result<()> {
-        let position = self
-            .notifications
-            .iter()
-            .position(|notification| notification.id == id);
+        for notifications in self.map.values_mut() {
+            let position = notifications
+                .iter()
+                .position(|notification| notification.id == id);
 
-        if let Some(idx) = position {
-            if let Some(notification) = self.notifications.remove(idx) {
-                self.clean_image(notification).await?;
-                self.write_notifications().await?;
+            if let Some(idx) = position {
+                if let Some(notification) = notifications.remove(idx) {
+                    notification::clean_image(&mut self.image_path_cache, notification).await?;
+                    self.write_notifications().await?;
+                    break;
+                }
             }
         }
 
@@ -115,14 +121,16 @@ impl NotificationData {
     pub async fn clear_class(&mut self, class: &str) -> anyhow::Result<()> {
         let class = class.to_lowercase();
 
-        let mut i = 0;
-        while i < self.notifications.len() {
-            if self.notifications[i].app_class == class {
-                let old = self.notifications.remove(i).unwrap();
+        for notifications in self.map.values_mut() {
+            let mut i = 0;
+            while i < notifications.len() {
+                if notifications[i].app_class == class {
+                    let old = notifications.remove(i).unwrap();
 
-                self.clean_image(old).await?;
-            } else {
-                i += 1;
+                    notification::clean_image(&mut self.image_path_cache, old).await?;
+                } else {
+                    i += 1;
+                }
             }
         }
 
@@ -132,9 +140,11 @@ impl NotificationData {
     }
 
     pub async fn cleanup(mut self) -> anyhow::Result<()> {
-        // Unfortunately I can't use a for-loop here because of lifetime issues.
-        while let Some(notification) = self.notifications.pop_back() {
-            self.clean_image(notification).await?;
+        for mut notifications in self.map.into_values() {
+            // Unfortunately I can't use a for-loop here because of lifetime issues.
+            while let Some(notification) = notifications.pop_back() {
+                notification::clean_image(&mut self.image_path_cache, notification).await?;
+            }
         }
 
         Ok(())
@@ -142,7 +152,7 @@ impl NotificationData {
 
     async fn write_notifications(&mut self) -> anyhow::Result<()> {
         self.json_bytes.clear();
-        serde_json::to_writer(&mut self.json_bytes, &self.notifications)
+        serde_json::to_writer(&mut self.json_bytes, &self.map)
             .context("Failed to serialize to json_bytes buffer")?;
         self.json_bytes.push(b'\n');
 
@@ -158,36 +168,6 @@ impl NotificationData {
             .write_all(&self.json_bytes)
             .await
             .context("Failed to write json_bytes to json_file")?;
-        Ok(())
-    }
-
-    // TODO: Make this O(1) by caching the amount of notifications that share the same image,
-    // so that there's no need to iterate over self.notifications every time to check if any other
-    // notifications are using the same image. This will prevent a lot of other functions from being
-    // n^2 complexity.
-    async fn clean_image(&mut self, notification: EwwNotification) -> anyhow::Result<()> {
-        if notification.tmp_image {
-            let Some(image_path) = notification.image_path else {
-                return Ok(());
-            };
-
-            let Some(path_count) = self.image_path_cache.get_mut(&image_path) else {
-                return Ok(());
-            };
-
-            *path_count -= 1;
-
-            if *path_count == 0 {
-                self.image_path_cache.remove(&image_path);
-
-                if let Err(e) = fs::remove_file(image_path).await {
-                    if e.kind() != io::ErrorKind::NotFound {
-                        bail!("Failed to clean up notification image file: {e:?}")
-                    }
-                }
-            }
-        }
-
         Ok(())
     }
 }

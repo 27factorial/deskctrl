@@ -17,7 +17,7 @@ hyphenation = "0.8.4"
 hyprland = "0.3.9"
 nix = "0.26.2"
 ring = "0.16.20"
-serde = { version = "1.0", features = ["serde_derive"] }
+serde = { version = "1.0", features = ["serde_derive", "rc"] }
 serde_json = "1.0.103"
 sysinfo = { path = "../sysinfo" }
 textwrap = { version = "0.16.0", features = ["hyphenation"] }

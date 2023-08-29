@@ -1,14 +1,15 @@
-use anyhow::Context;
+use anyhow::{Context, bail};
 use gdk_pixbuf::{Colorspace, Pixbuf};
 use glib::Bytes;
 use hyphenation::{Language, Load, Standard as HyphenStandard};
 use ring::digest;
 use serde::{Deserialize, Serialize, Serializer};
 use std::{
-    collections::HashMap,
+    cmp::Reverse,
+    collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
     sync::Arc,
-    time::SystemTime,
+    time::{Duration, SystemTime}, io,
 };
 use textwrap::{Options as WrapOptions, WordSplitter};
 use tokio::{
@@ -20,6 +21,117 @@ use zvariant::{OwnedValue, Type, Value};
 pub const NOTIFICATIONS_FILE: &str = "notifications.json";
 pub const NOTIFICATION_LIMIT: usize = 32;
 pub const LINE_LENGTH: usize = 36;
+
+/// When serialized to notifications.json, the format should look something like the
+/// following:
+/// [
+///     {
+///         "app_name": "app1"
+///         "notifications": [
+///             ...notification data
+///         ]
+///     },
+///     {
+///         "app_name": "app2"
+///         "notifications": [
+///             ...notification data
+///         ]
+///     },
+///     ...
+/// ]
+#[derive(Debug)]
+pub struct NotificationGroups {
+    map: HashMap<Arc<str>, NotificationQueue>,
+    image_path_cache: HashMap<Arc<Path>, usize>,
+    json_bytes: Vec<u8>,
+    json_file: File,
+}
+
+impl NotificationGroups {
+    pub async fn new() -> anyhow::Result<Self> {
+        let json_file = create_dir_and_file(format!("{}/{}", crate::DATA_PATH, NOTIFICATIONS_FILE))
+            .await
+            .context("Failed to create notifications JSON file")?;
+
+        Ok(Self {
+            map: Default::default(),
+            image_path_cache: Default::default(),
+            json_bytes: Vec::with_capacity(8192),
+            json_file,
+        })
+    }
+
+    pub async fn insert_or_replace(&mut self, notification: EwwNotification) -> anyhow::Result<()> {
+        let app_name = Arc::clone(&notification.app_name);
+
+        let data = self.map.entry(app_name).or_default();
+
+        if let Some(idx) = data
+            .notifications
+            .iter()
+            .position(|replace| replace.id == notification.id)
+        {
+            if let Some(old) = data.notifications.remove(idx) {
+                self.clean_image(old).await?;
+            }
+        }
+
+        todo!()
+    }
+
+    // TODO: Make this O(1) by caching the amount of notifications that share the same image,
+    // so that there's no need to iterate over self.notifications every time to check if any other
+    // notifications are using the same image. This will prevent a lot of other functions from being
+    // n^2 complexity.
+    async fn clean_image(&mut self, notification: EwwNotification) -> anyhow::Result<()> {
+        if notification.tmp_image {
+            let Some(image_path) = notification.image_path else {
+                return Ok(());
+            };
+
+            let Some(path_count) = self.image_path_cache.get_mut(&image_path) else {
+                return Ok(());
+            };
+
+            *path_count -= 1;
+
+            if *path_count == 0 {
+                self.image_path_cache.remove(&image_path);
+
+                if let Err(e) = fs::remove_file(image_path).await {
+                    if e.kind() != io::ErrorKind::NotFound {
+                        bail!("Failed to clean up notification image file: {e:?}")
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Serialize)]
+struct NotificationQueue {
+    last_updated: u128,
+    notifications: VecDeque<EwwNotification>,
+}
+
+impl NotificationQueue {
+    fn new() -> Self {
+        Self {
+            last_updated: 0,
+            notifications: VecDeque::with_capacity(NOTIFICATION_LIMIT),
+        }
+    }
+}
+
+// Deriving default would not reserve capacity for self.notifcations, which should be done since
+// only a maximum of NOTIFICATION_LIMIT notifications will be stored at a time.
+impl Default for NotificationQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[derive(Clone, PartialEq, Debug, Default, Deserialize, Type)]
 pub struct DBusNotification {
@@ -37,16 +149,13 @@ pub struct DBusNotification {
 pub struct EwwNotification {
     pub id: u32,
     pub timestamp: u64,
-    pub app_name: String,
+    pub app_name: Arc<str>,
     // This is only used internally to keep track of which windows correspond to which notifications
     #[serde(skip)]
     pub app_class: String,
     pub summary: String,
     pub body: String,
     pub app_icon: Option<PathBuf>,
-    // Putting this behind Arc instead of using PathBuf will make it much cheaper to copy
-    // when caching the image count.
-    #[serde(serialize_with = "serialize_opt_arc_path")]
     pub image_path: Option<Arc<Path>>,
     pub tmp_image: bool,
 }
@@ -59,11 +168,27 @@ pub struct PixbufConfig {
     has_alpha: bool,
 }
 
-fn serialize_opt_arc_path<S: Serializer>(
-    opt: &Option<Arc<Path>>,
+fn serialize_map_to_sorted_vec<S: Serializer>(
+    map: &HashMap<Arc<str>, NotificationQueue>,
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
-    opt.as_ref().map(|path| path.as_ref()).serialize(serializer)
+    #[derive(Serialize)]
+    struct Group<'a> {
+        app_name: &'a str,
+        notifications: &'a NotificationQueue,
+    }
+
+    let mut vec = map
+        .iter()
+        .map(|(app_name, notifications)| Group {
+            app_name,
+            notifications,
+        })
+        .collect::<Vec<_>>();
+
+    vec.sort_unstable_by_key(|elem| Reverse(elem.notifications.last_updated));
+
+    vec.serialize(serializer)
 }
 
 pub async fn make_eww(mut dbus_notif: DBusNotification) -> anyhow::Result<EwwNotification> {
@@ -96,10 +221,7 @@ pub async fn make_eww(mut dbus_notif: DBusNotification) -> anyhow::Result<EwwNot
         ("image_path", ImageKind::Path),
     ];
 
-    let timestamp = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .context("Failed to get duration since Unix epoch")?
-        .as_secs();
+    let timestamp = get_time().as_secs();
 
     let image_info = {
         // (image_path, tmp_image)
@@ -184,7 +306,7 @@ pub async fn make_eww(mut dbus_notif: DBusNotification) -> anyhow::Result<EwwNot
         if let Some(char) = ret.chars().next() {
             ret = char.to_uppercase().chain(ret.chars().skip(1)).collect();
         }
-        ret
+        ret.into()
     };
 
     let summary = word_wrap(&dbus_notif.summary, LINE_LENGTH)?;
@@ -240,6 +362,32 @@ pub async fn create_dir_and_file<P: AsRef<Path>>(path: P) -> anyhow::Result<File
     Ok(file)
 }
 
+pub async fn clean_image(cache: &mut HashMap<Arc<Path>, usize>, notification: EwwNotification) -> anyhow::Result<()> {
+    if notification.tmp_image {
+        let Some(image_path) = notification.image_path else {
+            return Ok(());
+        };
+
+        let Some(path_count) = cache.get_mut(&image_path) else {
+            return Ok(());
+        };
+
+        *path_count -= 1;
+
+        if *path_count == 0 {
+            cache.remove(&image_path);
+
+            if let Err(e) = fs::remove_file(image_path).await {
+                if e.kind() != io::ErrorKind::NotFound {
+                    bail!("Failed to clean up notification image file: {e:?}")
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn word_wrap(content: &str, line_length: usize) -> anyhow::Result<String> {
     let options = WrapOptions::new(line_length)
         .break_words(true)
@@ -284,4 +432,11 @@ fn get_digest(bytes: &[u8]) -> String {
         .iter()
         .for_each(|&byte| hex_bytes.push_str(HEX_DIGITS[byte as usize]));
     hex_bytes
+}
+
+// TODO: Use Instant instead of SystemTime to guarantee monotonicity.
+fn get_time() -> Duration {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .expect("failed to get duration since Unix epoch")
 }
