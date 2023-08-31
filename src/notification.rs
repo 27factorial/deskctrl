@@ -39,6 +39,9 @@ pub struct DBusNotification {
 pub struct EwwNotification {
     pub id: u32,
     pub timestamp: u64,
+    // The app name is redundant, since it's already under a group with the same
+    // name
+    #[serde(skip)]
     pub app_name: Arc<str>,
     // This is only used internally to keep track of which windows correspond to which notifications
     #[serde(skip)]
