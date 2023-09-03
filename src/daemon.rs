@@ -69,21 +69,21 @@ impl NotificationData {
             .entry(Arc::clone(&notification.app_name))
             .or_default();
 
-        if let Some(idx) = notifications
-            .iter()
-            .position(|replace| replace.id == notification.id)
-        {
-            if let Some(old) = notifications.remove(idx) {
-                notification::clean_image(&mut self.image_path_cache, old).await?;
-            }
-        }
-
         if notification.tmp_image {
             if let Some(ref image_path) = notification.image_path {
                 self.image_path_cache
                     .entry(Arc::clone(image_path))
                     .and_modify(|count| *count += 1)
                     .or_insert(1);
+            }
+        }
+
+        if let Some(idx) = notifications
+            .iter()
+            .position(|replace| replace.id == notification.id)
+        {
+            if let Some(old) = notifications.remove(idx) {
+                notification::clean_image(&mut self.image_path_cache, old).await?;
             }
         }
 
