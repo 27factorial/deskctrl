@@ -73,6 +73,8 @@ pub fn serialize_map_to_sorted_vec<S: Serializer>(
         timestamp: u128,
     }
 
+    // Notifications are serialized as a vector, ordered by timestamp, and empty notification groups
+    // are filtered out.
     let mut vec = map
         .iter()
         .map(|(app_name, (notifications, timestamp))| Group {
@@ -80,6 +82,7 @@ pub fn serialize_map_to_sorted_vec<S: Serializer>(
             notifications,
             timestamp: *timestamp,
         })
+        .filter(|group| !group.notifications.is_empty())
         .collect::<Vec<_>>();
 
     vec.sort_unstable_by_key(|elem| Reverse(elem.timestamp));
