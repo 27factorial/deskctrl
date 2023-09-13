@@ -53,6 +53,28 @@ pub struct EwwNotification {
     pub tmp_image: bool,
 }
 
+#[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Serialize)]
+pub struct NotificationGroup {
+    pub notifications: VecDeque<EwwNotification>,
+    #[serde(skip)]
+    pub timestamp: u128,
+}
+
+impl NotificationGroup {
+    pub fn new() -> Self {
+        Self {
+            notifications: VecDeque::new(),
+            timestamp: 0,
+        }
+    }
+}
+
+impl Default for NotificationGroup {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
 pub struct PixbufConfig {
     width: i32,
@@ -61,31 +83,26 @@ pub struct PixbufConfig {
     has_alpha: bool,
 }
 
-pub fn serialize_map_to_sorted_vec<S: Serializer>(
-    map: &HashMap<Arc<str>, (VecDeque<EwwNotification>, u128)>,
+pub fn serialize_map_to_filtered_sorted_vec<S: Serializer>(
+    map: &HashMap<Arc<str>, NotificationGroup>,
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
     #[derive(Serialize)]
-    struct Group<'a> {
+    struct AppAndGroup<'a> {
         app_name: &'a str,
-        notifications: &'a VecDeque<EwwNotification>,
-        #[serde(skip)]
-        timestamp: u128,
+        #[serde(flatten)]
+        group: &'a NotificationGroup,
     }
 
     // Notifications are serialized as a vector, ordered by timestamp, and empty notification groups
     // are filtered out.
     let mut vec = map
         .iter()
-        .map(|(app_name, (notifications, timestamp))| Group {
-            app_name,
-            notifications,
-            timestamp: *timestamp,
-        })
-        .filter(|group| !group.notifications.is_empty())
+        .map(|(app_name, group)| AppAndGroup { app_name, group })
+        .filter(|app_and_group| !app_and_group.group.notifications.is_empty())
         .collect::<Vec<_>>();
 
-    vec.sort_unstable_by_key(|elem| Reverse(elem.timestamp));
+    vec.sort_unstable_by_key(|elem| Reverse(elem.group.timestamp));
 
     vec.serialize(serializer)
 }

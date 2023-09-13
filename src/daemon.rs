@@ -1,11 +1,12 @@
 use crate::{
     data::{DiskInfo, MemoryUsage, NetworkUsage},
     ipc::{IpcRequest, IpcResponse},
-    notification::{self, EwwNotification, NOTIFICATION_LIMIT},
+    notification::{self, EwwNotification, NotificationGroup, NOTIFICATION_LIMIT},
     watcher::{
         CpuWatcher, DaemonContext, DiskWatcher, HyprlandContext, HyprlandWatcher, MemoryWatcher,
         NetworkWatcher, NotificationWatcher, SystemKey, Update, Watcher,
     },
+    NotificationCommand,
 };
 use anyhow::Context as _;
 use hyprland::{data::Client, shared::HyprDataActiveOptional};
@@ -35,7 +36,7 @@ struct SystemData {
 
 #[derive(Debug)]
 struct NotificationData {
-    map: HashMap<Arc<str>, (VecDeque<EwwNotification>, u128)>,
+    map: HashMap<Arc<str>, NotificationGroup>,
     image_path_cache: HashMap<Arc<Path>, usize>,
     json_bytes: Vec<u8>,
     json_file: File,
@@ -64,7 +65,7 @@ impl NotificationData {
         // will replace the old notification with the new one if necessary. This also cuts down on
         // disk usage for things like spotify, where only one song needs to be in the notification
         // queue.
-        let (notifications, timestamp) = self
+        let group = self
             .map
             .entry(Arc::clone(&notification.app_name))
             .or_default();
@@ -78,22 +79,23 @@ impl NotificationData {
             }
         }
 
-        if let Some(idx) = notifications
+        if let Some(idx) = group
+            .notifications
             .iter()
             .position(|replace| replace.id == notification.id)
         {
-            if let Some(old) = notifications.remove(idx) {
+            if let Some(old) = group.notifications.remove(idx) {
                 notification::clean_image(&mut self.image_path_cache, old).await?;
             }
         }
 
-        notifications.push_front(notification);
+        group.notifications.push_front(notification);
 
-        if notifications.len() > NOTIFICATION_LIMIT {
-            notifications.pop_back();
+        if group.notifications.len() > NOTIFICATION_LIMIT {
+            group.notifications.pop_back();
         }
 
-        *timestamp = SystemTime::now()
+        group.timestamp = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .expect("failed to get duration since Unix epoch")
             .as_nanos();
@@ -104,13 +106,14 @@ impl NotificationData {
     }
 
     pub async fn remove(&mut self, id: u32) -> anyhow::Result<()> {
-        for (notifications, _) in self.map.values_mut() {
-            let position = notifications
+        for group in self.map.values_mut() {
+            let position = group
+                .notifications
                 .iter()
                 .position(|notification| notification.id == id);
 
             if let Some(idx) = position {
-                if let Some(notification) = notifications.remove(idx) {
+                if let Some(notification) = group.notifications.remove(idx) {
                     notification::clean_image(&mut self.image_path_cache, notification).await?;
                     self.write_notifications().await?;
                     break;
@@ -124,12 +127,14 @@ impl NotificationData {
     // TODO: Switch this to extract_if when that's available on VecDeque (if ever)
     pub async fn clear_class(&mut self, class: &str) -> anyhow::Result<()> {
         let class = class.to_lowercase();
+        let mut write_notifications = false;
 
-        for (notifications, _) in self.map.values_mut() {
+        for group in self.map.values_mut() {
             let mut i = 0;
-            while i < notifications.len() {
-                if notifications[i].app_class == class {
-                    let old = notifications.remove(i).unwrap();
+            while i < group.notifications.len() {
+                if group.notifications[i].app_class == class {
+                    write_notifications = true;
+                    let old = group.notifications.remove(i).unwrap();
 
                     notification::clean_image(&mut self.image_path_cache, old).await?;
                 } else {
@@ -138,15 +143,19 @@ impl NotificationData {
             }
         }
 
-        self.write_notifications().await?;
+        // If no notifications were cleared, there's no need to write to the notifications file.
+        // This fixes the constant updating in ags/eww when switching windows.
+        if write_notifications {
+            self.write_notifications().await?;
+        }
 
         Ok(())
     }
 
     pub async fn cleanup(mut self) -> anyhow::Result<()> {
-        for (mut notifications, _) in self.map.into_values() {
+        for mut group in self.map.into_values() {
             // Unfortunately I can't use a for-loop here because of lifetime issues.
-            while let Some(notification) = notifications.pop_back() {
+            while let Some(notification) = group.notifications.pop_back() {
                 notification::clean_image(&mut self.image_path_cache, notification).await?;
             }
         }
@@ -159,7 +168,7 @@ impl NotificationData {
 
         let mut serializer = serde_json::Serializer::new(&mut self.json_bytes);
 
-        notification::serialize_map_to_sorted_vec(&self.map, &mut serializer)
+        notification::serialize_map_to_filtered_sorted_vec(&self.map, &mut serializer)
             .context("Failed to serialize to json_bytes buffer")?;
         self.json_bytes.push(b'\n');
 
@@ -271,7 +280,9 @@ pub async fn run_daemon() -> anyhow::Result<()> {
             res = sock.accept() => {
                 let (mut stream, _) = res.context("Could not accept unix stream")?;
 
-                stream.read_buf(&mut serde_buffer).await.context("Failed to read from unix stream")?;
+                stream.read_buf(&mut serde_buffer)
+                    .await
+                    .context("Failed to read from unix stream")?;
 
                 let request = match bincode::deserialize(&serde_buffer) {
                     Ok(request) => request,
@@ -287,16 +298,21 @@ pub async fn run_daemon() -> anyhow::Result<()> {
                         IpcResponse::Network(system_data.network.clone())
                     },
                     IpcRequest::Disk => {
-                        let mut info: Vec<_> = system_data.disk.values().filter(|info| info.name != "systemd-1" && info.mount_point != "/efi").cloned().collect();
+                        let mut info: Vec<_> = system_data.disk
+                            .values()
+                            .filter(|info| info.name != "systemd-1" && info.mount_point != "/efi")
+                            .cloned()
+                            .collect();
+
                         info.sort_by(|a, b| a.name.cmp(&b.name));
 
                         IpcResponse::Disk(info)
                     },
                     IpcRequest::Memory => IpcResponse::Memory(system_data.memory),
                     IpcRequest::Cpu => IpcResponse::Cpu(system_data.cpu),
-                    IpcRequest::DeleteNotification(id) => {
-                        notification_data.remove(id).await?;
-                        IpcResponse::NotificationDeleted(id)
+                    IpcRequest::Notification(command) => {
+                        handle_notification_command(command, &mut notification_data).await?;
+                        IpcResponse::Notification
                     }
                     IpcRequest::Kill => {
                         killed = true;
@@ -320,4 +336,13 @@ pub async fn run_daemon() -> anyhow::Result<()> {
         .context("Failed to clean up notification image data")?;
 
     Ok(())
+}
+
+async fn handle_notification_command(
+    command: NotificationCommand,
+    data: &mut NotificationData,
+) -> anyhow::Result<()> {
+    match command {
+        NotificationCommand::Delete { id } => data.remove(id).await,
+    }
 }

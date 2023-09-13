@@ -10,10 +10,13 @@ mod watcher;
 
 use anyhow::bail;
 use anyhow::Context as _;
+use clap::Args;
 use clap::Parser;
+use clap::Subcommand;
 use daemonize::Daemonize;
 use ipc::IpcRequest;
 use nix::unistd::Uid;
+use serde::{Deserialize, Serialize};
 use std::fs::File;
 
 const SOCKET_PATH: &str = "/dev/shm/deskctrld.sock";
@@ -33,12 +36,20 @@ pub enum Mode {
     Cpu,
     /// Kill the deskctrl daemon
     Kill,
-    /// Remove the specified notification from the deskctrl daemon
-    DelNotif { id: u32 },
+    /// Run a command to change or remove notification groups
+    #[clap(flatten)]
+    Notification(NotificationCommand),
     /// Provides daemon functionality without actually spawning deskctrl as a daemon
     TestDaemon,
     /// Start the deskctrl daemon
     Daemon,
+}
+
+#[derive(
+    Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Serialize, Deserialize, Subcommand,
+)]
+pub enum NotificationCommand {
+    Delete { id: u32 },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -52,7 +63,7 @@ fn main() -> anyhow::Result<()> {
         Mode::Memory => ipc::print_update(IpcRequest::Memory),
         Mode::Cpu => ipc::print_update(IpcRequest::Cpu),
         Mode::Kill => ipc::print_update(IpcRequest::Kill),
-        Mode::DelNotif { id } => ipc::print_update(IpcRequest::DeleteNotification(id)),
+        Mode::Notification(command) => ipc::print_update(IpcRequest::Notification(command)),
         Mode::TestDaemon => daemon_main(),
         Mode::Daemon => {
             let stdout =
@@ -68,7 +79,15 @@ fn main() -> anyhow::Result<()> {
                 .start()
                 .context("Failed to daemonize process (is another instance already running?)")?;
 
-            daemon_main()
+            match daemon_main() {
+                Ok(_) => Ok(()),
+                Err(e) => {
+                    for (idx, cause) in e.chain().rev().enumerate() {
+                        eprintln!("{}: {}", idx, cause);
+                    }
+                    Err(e)
+                }
+            }
         }
     }
 }

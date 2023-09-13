@@ -1,4 +1,5 @@
 use anyhow::Context as _;
+use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -6,15 +7,18 @@ use std::{
     os::unix::net::UnixStream,
 };
 
-use crate::data::{DiskInfo, MemoryUsage, NetworkUsage};
+use crate::{
+    data::{DiskInfo, MemoryUsage, NetworkUsage},
+    NotificationCommand,
+};
 
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Serialize, Deserialize)]
 pub enum IpcRequest {
     Network,
     Disk,
     Memory,
     Cpu,
-    DeleteNotification(u32),
+    Notification(NotificationCommand),
     Kill,
 }
 
@@ -24,7 +28,7 @@ pub enum IpcResponse {
     Disk(Vec<DiskInfo>),
     Memory(MemoryUsage),
     Cpu(f64),
-    NotificationDeleted(u32),
+    Notification,
     Killed,
 }
 
@@ -35,7 +39,7 @@ impl From<EwwResponse> for IpcResponse {
             EwwResponse::Disk(disk) => Self::Disk(disk),
             EwwResponse::Memory(memory) => Self::Memory(memory),
             EwwResponse::Cpu(cpu) => Self::Cpu(cpu),
-            EwwResponse::NotificationDeleted(id) => Self::NotificationDeleted(id),
+            EwwResponse::Notification => Self::Notification,
             EwwResponse::Killed => Self::Killed,
         }
     }
@@ -52,7 +56,7 @@ pub enum EwwResponse {
     Disk(Vec<DiskInfo>),
     Memory(MemoryUsage),
     Cpu(f64),
-    NotificationDeleted(u32),
+    Notification,
     Killed,
 }
 
@@ -63,7 +67,7 @@ impl From<IpcResponse> for EwwResponse {
             IpcResponse::Disk(disk) => Self::Disk(disk),
             IpcResponse::Memory(memory) => Self::Memory(memory),
             IpcResponse::Cpu(cpu) => Self::Cpu(cpu),
-            IpcResponse::NotificationDeleted(id) => Self::NotificationDeleted(id),
+            IpcResponse::Notification => Self::Notification,
             IpcResponse::Killed => Self::Killed,
         }
     }
@@ -95,8 +99,8 @@ pub fn print_update(request: IpcRequest) -> anyhow::Result<()> {
         IpcResponse::Killed => {
             writeln!(stdout, "Killed deskctrl daemon.").context(stdout_error)?;
         }
-        IpcResponse::NotificationDeleted(id) => {
-            writeln!(stdout, "Deleted Notification {id}").context(stdout_error)?;
+        IpcResponse::Notification => {
+            writeln!(stdout, "Edited notifications.").context(stdout_error)?;
         }
         _ => {
             let eww: EwwResponse = response.into();
