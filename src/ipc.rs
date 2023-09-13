@@ -1,5 +1,4 @@
 use anyhow::Context as _;
-use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,

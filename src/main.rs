@@ -10,7 +10,6 @@ mod watcher;
 
 use anyhow::bail;
 use anyhow::Context as _;
-use clap::Args;
 use clap::Parser;
 use clap::Subcommand;
 use daemonize::Daemonize;

@@ -11,7 +11,7 @@ use crate::{
 use anyhow::Context as _;
 use hyprland::{data::Client, shared::HyprDataActiveOptional};
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, HashMap},
     path::Path,
     sync::Arc,
     time::{Duration, SystemTime},
