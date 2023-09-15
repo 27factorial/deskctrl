@@ -37,7 +37,7 @@ pub struct DBusNotification {
 }
 
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Serialize)]
-pub struct EwwNotification {
+pub struct AgsNotification {
     pub id: u32,
     pub timestamp: u64,
     // The app name is redundant, since it's already under a group with the same
@@ -56,7 +56,7 @@ pub struct EwwNotification {
 
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Serialize)]
 pub struct NotificationGroup {
-    pub notifications: VecDeque<EwwNotification>,
+    pub notifications: VecDeque<AgsNotification>,
     #[serde(skip)]
     pub timestamp: u128,
 }
@@ -108,7 +108,7 @@ pub fn serialize_map_to_filtered_sorted_vec<S: Serializer>(
     vec.serialize(serializer)
 }
 
-pub async fn make_eww(mut dbus_notif: DBusNotification) -> anyhow::Result<EwwNotification> {
+pub async fn make_ags(mut dbus_notif: DBusNotification) -> anyhow::Result<AgsNotification> {
     enum ImageKind {
         Path,
         Data,
@@ -168,7 +168,7 @@ pub async fn make_eww(mut dbus_notif: DBusNotification) -> anyhow::Result<EwwNot
                     };
 
                     // DBus Notifications use the GDK Pixbuf format for image data. This function
-                    // converts it to a PNG instead, which can be displayed by eww.
+                    // converts it to a PNG instead, which can be displayed by ags.
                     let image_bytes = convert_image(image_data, config)
                         .context("Failed to convert Pixbuf image to PNG")?;
 
@@ -231,7 +231,7 @@ pub async fn make_eww(mut dbus_notif: DBusNotification) -> anyhow::Result<EwwNot
 
     let body = word_wrap_and_truncate(&dbus_notif.body, LINE_LENGTH)?;
 
-    Ok(EwwNotification {
+    Ok(AgsNotification {
         id: dbus_notif.replaces_id,
         timestamp,
         app_name,
@@ -283,7 +283,7 @@ pub async fn create_dir_and_file<P: AsRef<Path>>(path: P) -> anyhow::Result<File
 
 pub async fn clean_image(
     cache: &mut HashMap<Arc<Path>, usize>,
-    notification: EwwNotification,
+    notification: AgsNotification,
 ) -> anyhow::Result<()> {
     if notification.tmp_image {
         let Some(image_path) = notification.image_path else {
@@ -317,15 +317,11 @@ fn word_wrap_and_truncate(content: &str, line_length: usize) -> anyhow::Result<S
             Language::EnglishUS,
         )?));
 
-
     let full = textwrap::fill(content, options);
     let full_len = full.len();
 
     // this is probably slow as shit but oh well.
-    let mut truncated = full
-        .chars()
-        .take(TEXT_LENGTH - 1)
-        .collect::<String>();
+    let mut truncated = full.chars().take(TEXT_LENGTH - 1).collect::<String>();
 
     if full_len >= TEXT_LENGTH {
         truncated.push('…');

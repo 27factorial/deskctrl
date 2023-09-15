@@ -23,7 +23,7 @@ const IMAGE_PATH: &str = "/tmp/deskctrl/images";
 const DATA_PATH: &str = "/tmp/deskctrl/data";
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "Factorial's controller program for eww widgets", long_about = None)]
+#[command(author, version, about = "Factorial's controller program for ags widgets", long_about = None)]
 pub enum Mode {
     /// Get information about network speed and usage
     Network,

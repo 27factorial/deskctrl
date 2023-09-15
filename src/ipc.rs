@@ -31,26 +31,26 @@ pub enum IpcResponse {
     Killed,
 }
 
-impl From<EwwResponse> for IpcResponse {
-    fn from(value: EwwResponse) -> Self {
+impl From<AgsResponse> for IpcResponse {
+    fn from(value: AgsResponse) -> Self {
         match value {
-            EwwResponse::Network(network) => Self::Network(network),
-            EwwResponse::Disk(disk) => Self::Disk(disk),
-            EwwResponse::Memory(memory) => Self::Memory(memory),
-            EwwResponse::Cpu(cpu) => Self::Cpu(cpu),
-            EwwResponse::Notification => Self::Notification,
-            EwwResponse::Killed => Self::Killed,
+            AgsResponse::Network(network) => Self::Network(network),
+            AgsResponse::Disk(disk) => Self::Disk(disk),
+            AgsResponse::Memory(memory) => Self::Memory(memory),
+            AgsResponse::Cpu(cpu) => Self::Cpu(cpu),
+            AgsResponse::Notification => Self::Notification,
+            AgsResponse::Killed => Self::Killed,
         }
     }
 }
 
-// This is needed to write the response to stdout in a format that eww expects. This means that I
+// This is needed to write the response to stdout in a format that ags expects. This means that I
 // need a tagged response for communication between deskctrl processes, and an untagged one for
-// getting information into eww. This does mean that the process of serialization between processes
+// getting information into ags. This does mean that the process of serialization between processes
 // can be done with a more efficient format than JSON, though.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum EwwResponse {
+pub enum AgsResponse {
     Network(HashMap<String, NetworkUsage>),
     Disk(Vec<DiskInfo>),
     Memory(MemoryUsage),
@@ -59,7 +59,7 @@ pub enum EwwResponse {
     Killed,
 }
 
-impl From<IpcResponse> for EwwResponse {
+impl From<IpcResponse> for AgsResponse {
     fn from(value: IpcResponse) -> Self {
         match value {
             IpcResponse::Network(network) => Self::Network(network),
@@ -102,8 +102,8 @@ pub fn print_update(request: IpcRequest) -> anyhow::Result<()> {
             writeln!(stdout, "Edited notifications.").context(stdout_error)?;
         }
         _ => {
-            let eww: EwwResponse = response.into();
-            serde_json::to_writer(&mut stdout, &eww).context(stdout_error)?;
+            let ags: AgsResponse = response.into();
+            serde_json::to_writer(&mut stdout, &ags).context(stdout_error)?;
         }
     }
 

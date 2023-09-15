@@ -2,7 +2,7 @@ use crate::{
     data::{
         DiskInfo, DiskUsage, MemoryUsage, NetworkSample, NetworkUnit, NetworkUsage, StorageUnit,
     },
-    notification::{self, DBusNotification, EwwNotification},
+    notification::{self, AgsNotification, DBusNotification},
     ringbuf::RingBuf,
     type_map::{TypeMap, TypeMapKey},
 };
@@ -82,7 +82,7 @@ pub enum Update {
     Disk(BTreeMap<String, DiskInfo>),
     Memory(MemoryUsage),
     Cpu(f64),
-    Notification(EwwNotification),
+    Notification(AgsNotification),
     ActiveWindow(WindowEventData),
 }
 
@@ -95,7 +95,7 @@ impl TypeMapKey for SystemKey {
 pub struct NotificationKey;
 
 impl TypeMapKey for NotificationKey {
-    type Value = Mutex<VecDeque<EwwNotification>>;
+    type Value = Mutex<VecDeque<AgsNotification>>;
 }
 
 pub struct NetworkWatcher {
@@ -489,9 +489,9 @@ impl Watcher for NotificationWatcher {
                 }
             };
 
-            let notification = notification::make_eww(body)
+            let notification = notification::make_ags(body)
                 .await
-                .context("Failed to convert DBus Notification to Eww Notification format")?;
+                .context("Failed to convert DBus Notification to ags Notification format")?;
 
             ctx.send_update(Update::Notification(notification)).await?;
         }

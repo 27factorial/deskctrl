@@ -1,7 +1,7 @@
 use crate::{
     data::{DiskInfo, MemoryUsage, NetworkUsage},
     ipc::{IpcRequest, IpcResponse},
-    notification::{self, EwwNotification, NotificationGroup, NOTIFICATION_LIMIT},
+    notification::{self, AgsNotification, NotificationGroup, NOTIFICATION_LIMIT},
     watcher::{
         CpuWatcher, DaemonContext, DiskWatcher, HyprlandContext, HyprlandWatcher, MemoryWatcher,
         NetworkWatcher, NotificationWatcher, SystemKey, Update, Watcher,
@@ -60,7 +60,7 @@ impl NotificationData {
         })
     }
 
-    pub async fn insert_or_replace(&mut self, notification: EwwNotification) -> anyhow::Result<()> {
+    pub async fn insert_or_replace(&mut self, notification: AgsNotification) -> anyhow::Result<()> {
         // the notification ID corresponds to replace_id in the DBus notification, so this check
         // will replace the old notification with the new one if necessary. This also cuts down on
         // disk usage for things like spotify, where only one song needs to be in the notification
@@ -144,7 +144,7 @@ impl NotificationData {
         }
 
         // If no notifications were cleared, there's no need to write to the notifications file.
-        // This fixes the constant updating in ags/eww when switching windows.
+        // This fixes the constant updating in ags when switching windows.
         if write_notifications {
             self.write_notifications().await?;
         }
