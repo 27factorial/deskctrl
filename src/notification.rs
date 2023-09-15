@@ -22,6 +22,7 @@ use zvariant::{OwnedValue, Type, Value};
 pub const NOTIFICATIONS_FILE: &str = "notifications.json";
 pub const NOTIFICATION_LIMIT: usize = 32;
 pub const LINE_LENGTH: usize = 36;
+pub const TEXT_LENGTH: usize = 256;
 
 #[derive(Clone, PartialEq, Debug, Default, Deserialize, Type)]
 pub struct DBusNotification {
@@ -228,15 +229,14 @@ pub async fn make_eww(mut dbus_notif: DBusNotification) -> anyhow::Result<EwwNot
         ret.into()
     };
 
-    let summary = word_wrap(&dbus_notif.summary, LINE_LENGTH)?;
-    let body = word_wrap(&dbus_notif.body, LINE_LENGTH)?;
+    let body = word_wrap_and_truncate(&dbus_notif.body, LINE_LENGTH)?;
 
     Ok(EwwNotification {
         id: dbus_notif.replaces_id,
         timestamp,
         app_name,
         app_class,
-        summary,
+        summary: dbus_notif.summary,
         body,
         app_icon,
         image_path,
@@ -310,14 +310,28 @@ pub async fn clean_image(
     Ok(())
 }
 
-fn word_wrap(content: &str, line_length: usize) -> anyhow::Result<String> {
+fn word_wrap_and_truncate(content: &str, line_length: usize) -> anyhow::Result<String> {
     let options = WrapOptions::new(line_length)
         .break_words(true)
         .word_splitter(WordSplitter::Hyphenation(HyphenStandard::from_embedded(
             Language::EnglishUS,
         )?));
 
-    Ok(textwrap::fill(content, options))
+
+    let full = textwrap::fill(content, options);
+    let full_len = full.len();
+
+    // this is probably slow as shit but oh well.
+    let mut truncated = full
+        .chars()
+        .take(TEXT_LENGTH - 1)
+        .collect::<String>();
+
+    if full_len >= TEXT_LENGTH {
+        truncated.push('…');
+    }
+
+    Ok(truncated)
 }
 
 fn get_digest(bytes: &[u8]) -> String {
